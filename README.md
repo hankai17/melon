@@ -1,2 +1,2 @@
 # melon
-proxy
+Go proxy project
