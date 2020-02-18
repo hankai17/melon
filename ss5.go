@@ -65,9 +65,9 @@ type Cmd struct {
 func NewCmd(cmd uint8, atype uint8, addr string, port uint16) *Cmd {
   return &Cmd{
     Cmd:        cmd,
-    AddrType:   atype;
+    AddrType:   atype,
     Addr:       addr,
-    Port        port,
+    Port:       port,
   }
 }
 
@@ -84,7 +84,7 @@ func ReadCmd(r io.Reader) (*Cmd, error) {
     return nil, ErrBadVersion
   }
   cmd := &Cmd {
-    Cmd: b[1]
+    Cmd:      b[1],
     AddrType: b[3],
   }
   pos := 4
@@ -102,7 +102,7 @@ func ReadCmd(r io.Reader) (*Cmd, error) {
     cmd.Addr = net.IP(b[pos : pos + 16]).String()
     pos += 16
   case AddrDomain:
-    length = int(b[pos])
+    length := int(b[pos])
     if n != 4 + 1 + length + 2 {
       return nil, ErrBadFormat
     }
@@ -126,7 +126,7 @@ func (cmd *Cmd) Write(w io.Writer) (err error) {
   case AddrIPv4:
     pos += copy(b[pos:], net.ParseIP(cmd.Addr).To4()) // https://golang.google.cn/pkg/net/#IP // host order
   case AddrIPv6:
-    pos += copy(b[post:], net.ParseIP(cmd.Addr).To16())
+    pos += copy(b[pos:], net.ParseIP(cmd.Addr).To16())
   case AddrDomain:
     b[pos] = byte(len(cmd.Addr))
     pos++
