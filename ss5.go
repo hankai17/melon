@@ -5,6 +5,7 @@ import (
   "errors" // used for macros
   "io" // used for read/writer
   "net" // used for ip parser
+  "log"
 )
 
 const (
@@ -77,6 +78,7 @@ func ReadCmd(r io.Reader) (*Cmd, error) {
   if err != nil {
     return nil, err
   }
+  log.Println("read cmd:", b[:n])
   if n < 10 {
     return nil, ErrBadFormat
   }
@@ -110,7 +112,8 @@ func ReadCmd(r io.Reader) (*Cmd, error) {
     cmd.Addr = string(b[pos: pos+length])
     pos += length
   default:
-    return nil, ErrBadAddrType
+    //return nil, ErrBadAddrType
+    pos += 4
   }
   cmd.Port = binary.BigEndian.Uint16(b[pos:])
   return cmd, nil
@@ -134,6 +137,7 @@ func (cmd *Cmd) Write(w io.Writer) (err error) {
   }
   binary.BigEndian.PutUint16(b[pos:], cmd.Port) // port is net order
   pos += 2
+  log.Println("write cmd:", b[:pos])
   _, err = w.Write(b[:pos])
   return
 }
