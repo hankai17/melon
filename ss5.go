@@ -6,10 +6,15 @@ import (
   "io" // used for read/writer
   "net" // used for ip parser
   "log"
+  "fmt"
 )
 
 const (
   Ver5 = 5
+)
+
+const (
+  CmdConnect uint8 = 1
 )
 
 const (
@@ -144,5 +149,10 @@ func (cmd *Cmd) Write(w io.Writer) (err error) {
 
 func (cmd *Cmd) GetError() error {
   return cmdErrMap[cmd.Cmd]
+}
+
+func (cmd *Cmd) String() string {
+  return fmt.Sprintf("5 %d 0 %d %s %d",
+    cmd.Cmd, cmd.AddrType, cmd.Addr, cmd.Port)
 }
 

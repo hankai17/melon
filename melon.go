@@ -46,6 +46,133 @@ func (g *Melon) Run() error {
   return lfd.Close()
 }
 
+func (g *Melon) cli(conn net.Conn) {
+  lg := NewLog()
+  dconn, err := g.connect(g.Daddr)
+  if err != nil {
+    lg.Logln(err)
+    return
+  }
+  defer dconn.Close()
+
+  //laddr := dconn.(*net.TCPConn).LocalAddr().String()
+  laddr := dconn.LocalAddr().String()
+  lg.Logln(laddr)
+
+  if _, err := dconn.Write([]byte{5, 1, 0}); err != nil {
+    lg.Logln(err)
+    return
+  }
+  lg.Logln(">>>|", []byte{5, 1, 0})
+
+  b := make([]byte, 8192)
+  n, err := io.ReadFull(dconn, b[:2])
+  if err != nil {
+    lg.Logln(err)
+    return
+  }
+  lg.Logln("<<<|", b[:n])
+
+  n, err = conn.Read(b)
+  if err != nil {
+    lg.Logln(err)
+    return
+  }
+
+  if b[0] == 5 { // ss5, NO AUTHENTICATION
+    lg.Logln("|>>>", b[:n])
+
+    if _, err := conn.Write([]byte{5, 0}); err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln("|<<<", []byte{5, 0})
+    cmd, err := ReadCmd(conn)
+    if err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln("|>>>", cmd)
+
+    if err = cmd.Write(dconn); err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln(">>>|", cmd)
+
+    cmd, err = ReadCmd(dconn)
+    if err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln("<<<|", cmd)
+
+    if err = cmd.Write(conn); err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln("|<<<", cmd)
+    lg.Logln()
+    lg.Flush()
+    g.transport(conn, dconn)
+    return
+  }
+
+  req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b[:n])))
+  if err != nil {
+    lg.Logln(err)
+    return
+  }
+  lg.Logln(req.Method, req.RequestURI)
+
+  var addr string
+  var port uint16
+
+  host := strings.Split(req.Host, ":")
+  if len(host) == 1 {
+    addr = host[0]
+    port = 80
+  }
+  if len(host) == 2 {
+    addr = host[0]
+    n, _ := strconv.ParseUint(host[1], 10, 16)
+    port = uint16(n)
+  }
+  cmd := NewCmd(CmdConnect, AddrDomain, addr, port)
+  if err = cmd.Write(dconn); err != nil {
+    lg.Logln(err)
+    return
+  }
+  lg.Logln(">>>|", cmd)
+  if cmd, err = ReadCmd(dconn); err != nil {
+    lg.Logln(err)
+    return
+  }
+  lg.Logln("<<<|", cmd)
+  if cmd.Cmd != Succeeded {
+    conn.Write([]byte("HTTP/1.1 503 Service unavailable\r\n" +
+    "Proxy-Agent: melon/1.0.0\r\n\r\n"))
+    return
+  }
+  if req.Method == "CONNECT" {
+    if _, err = conn.Write(
+      []byte("HTTP/1.1 200 Connection established\r\n" +
+      "Proxy-Agent: melon/1.0.0\r\n\r\n")); err != nil {
+        lg.Logln(err)
+        return
+      }
+  } else {
+    if err = req.Write(dconn); err != nil {
+      lg.Logln(err)
+      return
+    }
+  }
+  lg.Logln()
+  lg.Flush()
+  g.transport(conn, dconn)
+
+}
+
 func (g *Melon) connect(addr string) (net.Conn, error) {
   if len(g.Proxy) == 0 { // 非代理比较简单直接去链接就好了
     taddr, err := net.ResolveTCPAddr("tcp", addr)
@@ -99,42 +226,52 @@ func (g *Melon) connect(addr string) (net.Conn, error) {
 
 func (g *Melon) srv(conn net.Conn) {
   b := make([]byte, 8192)
+  lg := NewLog()
   n, err := conn.Read(b)
   if err != nil {
-    log.Println(err)
+    lg.Logln(err)
     return
   }
-  if bytes.Equal(b[:n], []byte{5, 1, 0}) { // ss5, NO AUTHENICATION
-    log.Println("read cmd:", b[:n])
+  //if bytes.Equal(b[:n], []byte{5, 1, 0}) { // ss5, NO AUTHENICATION
+  if b[0] == 5 {
+    lg.Logln("|>>>", b[:n])
     if _, err := conn.Write([]byte{5, 0}); err != nil {
-      log.Println(err)
+      lg.Logln(err)
       return
     }
+    lg.Logln("|<<<", []byte{5, 0})
 
     cmd, err := ReadCmd(conn)
     if err != nil {
+      lg.Logln(err)
       return
     }
+    lg.Logln("|>>>", cmd)
     host := cmd.Addr + ":" + strconv.Itoa(int(cmd.Port))
-    log.Println("connect", host)
+    lg.Logln("connect", host)
     tconn, err := g.connect(host)
     if err != nil {
-      log.Println(err)
-      NewCmd(ConnRefused, 0, "", 0).Write(conn)
+      lg.Logln(err)
+      cmd = NewCmd(ConnRefused, 0, "", 0)
+      cmd.Write(conn)
+      lg.Logln("|<<<", cmd)
       return
     }
     defer tconn.Close()
     if err = NewCmd(Succeeded, AddrIPv4, "0.0.0.0", 0).Write(conn); err != nil {
-      log.Println(err)
+      lg.Logln(err)
       return
     }
+    lg.Logln("|<<<", cmd)
+    lg.Logln()
+    lg.Flush()
     g.transport(conn, tconn)
     return
   }
 
   req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b[:n])))
   if err != nil {
-    log.Println(err)
+    lg.Logln(err)
     return
   }
   log.Println(req.Method, req.RequestURI)
@@ -144,7 +281,7 @@ func (g *Melon) srv(conn net.Conn) {
   }
   tconn, err := g.connect(host)
   if err != nil {
-    log.Println(err)
+    lg.Logln(err)
     conn.Write([]byte("HTTP/1.1 503 Service unavailable\r=n" +
     "Proxy-Agent: melon/1.0.0\r\n\r\n"))
     return
@@ -153,13 +290,17 @@ func (g *Melon) srv(conn net.Conn) {
   if req.Method == "CONNECT" {
     if _, err = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n" +
     "Proxy-Agent: melon/1.0.0\r\n\r\n")); err != nil {
+      lg.Logln(err)
       return
     }
   } else {
     if err := req.Write(tconn); err != nil {
+      lg.Logln(err)
       return
     }
   }
+  lg.Logln()
+  lg.Flush()
   g.transport(conn, tconn)
 }
 
