@@ -11,6 +11,10 @@ import (
   "strconv" // for inta
   "net/http" // for parse http header
   "bufio" // for httpreader
+  "net/url" // for construct http and recv
+  "fmt"
+  "encoding/binary"
+  "github.com/shadowsocks/shadowsocks-go/shadowsocks" // https://www.jianshu.com/p/f688138cf465
 )
 
 const (
@@ -23,6 +27,7 @@ const (
 // Droxy: forward tcp package to daddr  Same as Proxy
 type Melon struct {
   Laddr, Daddr, Proxy string
+  Shadows   bool // for compare
 }
 
 func (g *Melon) Run() error {
@@ -46,8 +51,14 @@ func (g *Melon) Run() error {
   return lfd.Close()
 }
 
+// cli中 与dst握手 强制发510  先不管读到了什么  此时读c如果客户端发的是http铭文则构造成ss 发到dst 
+// 如果客户端本身发的就是ss则透传 
 func (g *Melon) cli(conn net.Conn) {
-  lg := NewLog()
+  lg := NewLog(true)
+  defer func() {
+    lg.Logln()
+    lg.Flush()
+  }()
   dconn, err := g.connect(g.Daddr)
   if err != nil {
     lg.Logln(err)
@@ -64,6 +75,44 @@ func (g *Melon) cli(conn net.Conn) {
     return
   }
   lg.Logln(">>>|", []byte{5, 1, 0})
+
+  if g.Shadows {
+    lg.Logln("shadowsocks, aes-256-cfb")
+    cipher, _ := shadowsocks.NewCipher("aes-256-cfb", "123456")
+    conn = shadowsocks.NewConn(conn, cipher)
+    addr, port, extra, err := getRequest(conn)
+    if err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln(addr, port)
+
+    cmd := NewCmd(CmdConnect, AddrDomain, addr, port)
+    if err = cmd.Write(dconn); err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln(">>>|", cmd)
+    if cmd, err = ReadCmd(dconn); err != nil {
+      lg.Logln(err)
+      return
+    }
+    lg.Logln("<<<|", cmd)
+    if cmd.Cmd != Succeeded {
+      conn.Write([]byte("HTTP/1.1 503 Service unavailable\r\n" + 
+      "Proxy-Agent: gost/1.0\r\n\r\n"))
+      return
+    }
+
+    if extra != nil {
+      if _, err := dconn.Write(extra); err != nil {
+        log.Println(err)
+        return
+      }
+    }
+    g.transport(conn, dconn)
+    return
+  }
 
   b := make([]byte, 8192)
   n, err := io.ReadFull(dconn, b[:2])
@@ -112,8 +161,6 @@ func (g *Melon) cli(conn net.Conn) {
       return
     }
     lg.Logln("|<<<", cmd)
-    lg.Logln()
-    lg.Flush()
     g.transport(conn, dconn)
     return
   }
@@ -167,12 +214,11 @@ func (g *Melon) cli(conn net.Conn) {
       return
     }
   }
-  lg.Logln()
-  lg.Flush()
   g.transport(conn, dconn)
 
 }
 
+// 如果有代理则与代理建链 Connect请求200OK 没有代理直接建链
 func (g *Melon) connect(addr string) (net.Conn, error) {
   if len(g.Proxy) == 0 { // 非代理比较简单直接去链接就好了
     taddr, err := net.ResolveTCPAddr("tcp", addr)
@@ -193,6 +239,7 @@ func (g *Melon) connect(addr string) (net.Conn, error) {
   }
 
   // 2 send http CONNET request to proxy
+  /*
   b := make([]byte, 1500)
   buffer := bytes.NewBuffer(b)
   buffer.WriteString("CONNECT " + addr + " HTTP/1.1\r\n")
@@ -202,8 +249,22 @@ func (g *Melon) connect(addr string) (net.Conn, error) {
     pconn.Close()
     return nil, err
   }
-
+  */
+  header := http.Header{}
+  header.Set("Proxy-Connection", "keep-alive")
+  req := &http.Request {
+    Method: "CONNECTION",
+    URL: &url.URL{Host: addr},
+    Host: addr,
+    Header: header,
+  }
+  if err := req.Write(pconn); err != nil {
+    log.Println(err)
+    pconn.Close()
+    return nil, err
+  }
   // 3 recv http resp from proxy
+  /*
   r := ""
   for !strings.HasSuffix(r, "\r\n\r\n") {
     n := 0
@@ -213,7 +274,6 @@ func (g *Melon) connect(addr string) (net.Conn, error) {
     }
     r += string(b[:n])
   }
-
   log.Println(r)
   if !strings.Contains(r, "200") {
     log.Println("connection failed:\n", r)
@@ -221,18 +281,35 @@ func (g *Melon) connect(addr string) (net.Conn, error) {
     pconn.Close()
     return nil, err
   }
+  */
+  resp, err := http.ReadResponse(bufio.NewReader(pconn), req)
+  if err != nil {
+    log.Println(err)
+    pconn.Close()
+    return nil, err
+  }
+  if resp.StatusCode != http.StatusOK {
+    pconn.Close()
+    return nil, errors.New(resp.Status)
+  }
   return pconn, nil
 }
 
+// srv服务ss 解析ss获取host 建链之 然后中转数据 
+// 如果不是ss协议 则走http代理
 func (g *Melon) srv(conn net.Conn) {
   b := make([]byte, 8192)
-  lg := NewLog()
+  lg := NewLog(true)
+  defer func() {
+    lg.Logln()
+    lg.Flush()
+  } ()
   n, err := conn.Read(b)
   if err != nil {
     lg.Logln(err)
     return
   }
-  //if bytes.Equal(b[:n], []byte{5, 1, 0}) { // ss5, NO AUTHENICATION
+  //if bytes.Equal(b[:n], []byte{5, 1, 0})  // ss5, NO AUTHENICATION
   if b[0] == 5 {
     lg.Logln("|>>>", b[:n])
     if _, err := conn.Write([]byte{5, 0}); err != nil {
@@ -263,22 +340,22 @@ func (g *Melon) srv(conn net.Conn) {
       return
     }
     lg.Logln("|<<<", cmd)
-    lg.Logln()
-    lg.Flush()
     g.transport(conn, tconn)
     return
   }
 
+  // curl -vx 127.0.0.1:8080 -o /dev/null "http://www.ifeng.com"
+  // curl -v -o /dev/null "http://127.0.0.1:8080/1.html" -H "Host: www.ifeng.com"  ALL is well
   req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(b[:n])))
   if err != nil {
     lg.Logln(err)
     return
   }
-  log.Println(req.Method, req.RequestURI)
   host := req.Host
   if !strings.Contains(host, ":") {
     host = host + ":80"
   }
+  log.Println(req.Method, host, req.RequestURI)
   tconn, err := g.connect(host)
   if err != nil {
     lg.Logln(err)
@@ -299,16 +376,67 @@ func (g *Melon) srv(conn net.Conn) {
       return
     }
   }
-  lg.Logln()
-  lg.Flush()
   g.transport(conn, tconn)
+}
+
+func getRequest(conn net.Conn) (host string, port uint16, extra []byte, err error) {
+  const (
+    idType = 0
+    idIP0  = 1
+    idDmLen = 1
+    idDm0   = 2
+    typeIPv4 = 1
+    typeDm = 3
+    typeIPv6 = 4
+    lenIPv4 = 1 + net.IPv4len + 2
+    lenIPv6 = 1 + net.IPv6len + 2
+    lenDmBase = 1 + 1 + 2
+  )
+  buf := make([]byte, 260)
+  var n int
+  if n, err = io.ReadAtLeast(conn, buf, idDmLen+1); err != nil {
+    log.Println(err)
+    return
+  }
+  log.Println(buf[:n])
+  reqLen := -1
+  switch buf[idType] {
+  case typeIPv4:
+    reqLen = lenIPv4
+  case typeIPv6:
+    reqLen = lenIPv6
+  case typeDm:
+    reqLen = int(buf[idDmLen]) + lenDmBase
+  default:
+    err = fmt.Errorf("addr type %d not supported", buf[idType])
+    return
+  }
+  if n < reqLen {
+    if _, err = io.ReadFull(conn, buf[n:reqLen]); err != nil {
+      log.Println(err)
+      return
+    }
+  } else if n > reqLen {
+    extra = buf[reqLen:n]
+  }
+
+  switch buf[idType] {
+  case typeIPv4:
+    host = net.IP(buf[idIP0 : idIP0+net.IPv4len]).String()
+  case typeIPv6:
+    host = net.IP(buf[idIP0 : idIP0+net.IPv6len]).String()
+  case typeDm:
+    host = string(buf[idDm0 : idDm0+buf[idDmLen]])
+  }
+  port = binary.BigEndian.Uint16(buf[reqLen-1 : reqLen])
+  return
 }
 
 func (g *Melon) handle(conn net.Conn) {
   defer conn.Close()
   // as client
   if  len(g.Daddr) > 0 {
-    g.connectDst(conn)
+    g.cli(conn)
     return
   }
 
