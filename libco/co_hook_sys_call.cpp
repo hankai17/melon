@@ -222,10 +222,10 @@ int socket(int domain, int type, int protocol)
 		return fd;
 	}
 
-	rpchook_t *lp = alloc_by_fd( fd );
+	rpchook_t *lp = alloc_by_fd( fd );                      //分配fdctx
 	lp->domain = domain;
 	
-	fcntl( fd, F_SETFL, g_sys_fcntl_func(fd, F_GETFL,0 ) );
+	fcntl( fd, F_SETFL, g_sys_fcntl_func(fd, F_GETFL,0 ) ); // 为什么不设置非阻塞?
 
 	return fd;
 }
@@ -294,7 +294,7 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	}
 	rpchook_t *lp = get_by_fd( fd );
 
-	if( !lp || ( O_NONBLOCK & lp->user_flag ) ) 
+	if( !lp || ( O_NONBLOCK & lp->user_flag ) )  // 上层用的是阻塞?
 	{
 		ssize_t ret = g_sys_read_func( fd,buf,nbyte );
 		return ret;
@@ -306,9 +306,9 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	pf.fd = fd;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 
-	int pollret = poll( &pf,1,timeout );
+	int pollret = poll( &pf,1,timeout ); // do_io ??? 发生调度
 
-	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte );
+	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte ); // 这里肯定是可读事件
 
 	if( readret < 0 )
 	{
