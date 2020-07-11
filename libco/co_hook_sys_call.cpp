@@ -237,7 +237,7 @@ int co_accept( int fd, struct sockaddr *addr, socklen_t *len )
 	{
 		return cli;
 	}
-	alloc_by_fd( cli );
+	alloc_by_fd( cli ); // 只有起socket跟accept时候才走hook 也就是说针对的是socket类型
 	return cli;
 }
 
@@ -270,7 +270,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 	}
 	return ret;
 }
-int close(int fd)
+int close(int fd) // 只有close时 才free shutdown不free跟my_sylar一样
 {
 	HOOK_SYS_FUNC( close );
 	
@@ -294,7 +294,7 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	}
 	rpchook_t *lp = get_by_fd( fd );
 
-	if( !lp || ( O_NONBLOCK & lp->user_flag ) )  // 上层用的是阻塞?
+	if( !lp || ( O_NONBLOCK & lp->user_flag ) )  // 上层用的是非阻塞
 	{
 		ssize_t ret = g_sys_read_func( fd,buf,nbyte );
 		return ret;
@@ -306,7 +306,7 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	pf.fd = fd;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 
-	int pollret = poll( &pf,1,timeout ); // do_io ??? 发生调度
+	int pollret = poll( &pf,1,timeout ); // do_io 发生调度
 
 	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte ); // 这里肯定是可读事件
 
@@ -338,7 +338,7 @@ ssize_t write( int fd, const void *buf, size_t nbyte )
 	int timeout = ( lp->write_timeout.tv_sec * 1000 ) 
 				+ ( lp->write_timeout.tv_usec / 1000 );
 
-	ssize_t writeret = g_sys_write_func( fd,(const char*)buf + wrotelen,nbyte - wrotelen );
+	ssize_t writeret = g_sys_write_func( fd,(const char*)buf + wrotelen,nbyte - wrotelen ); // 阻塞式预写??? 还是会发生阻塞!!!
 
 	if( writeret > 0 )
 	{
@@ -386,7 +386,7 @@ ssize_t sendto(int socket, const void *message, size_t length,
 		return g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
 	}
 
-	ssize_t ret = g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
+	ssize_t ret = g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len ); // 阻塞SOKCET 读写的时候返回了EAGAIN // https://www.cnblogs.com/javado/p/4746657.html // 上层必须设置SO_RCVTIMEO and SO_SNDTIMEO
 	if( ret < 0 && EAGAIN == errno )
 	{
 		int timeout = ( lp->write_timeout.tv_sec * 1000 ) 
@@ -429,7 +429,7 @@ ssize_t recvfrom(int socket, void *buffer, size_t length,
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 	poll( &pf,1,timeout );
 
-	ssize_t ret = g_sys_recvfrom_func( socket,buffer,length,flags,address,address_len );
+	ssize_t ret = g_sys_recvfrom_func( socket,buffer,length,flags,address,address_len ); // 为什么收的时候必须走一下hook 而发的时候就可以直接发?
 	return ret;
 }
 

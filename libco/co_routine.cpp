@@ -259,7 +259,7 @@ void inline Join( TLink*apLink,TLink *apOther )
 }
 
 /////////////////for copy stack //////////////////////////
-stStackMem_t* co_alloc_stackmem(unsigned int stack_size)
+stStackMem_t* co_alloc_stackmem(unsigned int stack_size) // 分配1个stack
 {
 	stStackMem_t* stack_mem = (stStackMem_t*)malloc(sizeof(stStackMem_t));
 	stack_mem->ocupy_co= NULL;
@@ -269,7 +269,7 @@ stStackMem_t* co_alloc_stackmem(unsigned int stack_size)
 	return stack_mem;
 }
 
-stShareStack_t* co_alloc_sharestack(int count, int stack_size)
+stShareStack_t* co_alloc_sharestack(int count, int stack_size) // 分配n个stack
 {
 	stShareStack_t* share_stack = (stShareStack_t*)malloc(sizeof(stShareStack_t));
 	share_stack->alloc_idx = 0;
@@ -292,7 +292,7 @@ static stStackMem_t* co_get_stackmem(stShareStack_t* share_stack)
 	{
 		return NULL;
 	}
-	int idx = share_stack->alloc_idx % share_stack->count;
+	int idx = share_stack->alloc_idx % share_stack->count; // 如果正在使用呢?
 	share_stack->alloc_idx++;
 
 	return share_stack->stack_array[idx];
@@ -514,7 +514,7 @@ int co_create( stCoRoutine_t **ppco,const stCoRoutineAttr_t *attr,pfn_co_routine
 	{
 		co_init_curr_thread_env();
 	}
-	stCoRoutine_t *co = co_create_env( co_get_curr_thread_env(), attr, pfn,arg );
+	stCoRoutine_t *co = co_create_env( co_get_curr_thread_env(), attr, pfn,arg ); // 起routine 该新起的routine隶属于 该线程的kernel env
 	*ppco = co;
 	return 0;
 }
@@ -532,10 +532,10 @@ void co_release( stCoRoutine_t *co )
 
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co);
 
-void co_resume( stCoRoutine_t *co )
+void co_resume( stCoRoutine_t *co ) // 保存当前到kernel 执行fun  // 场景是已经在主调度处 还未执行任何routine
 {
 	stCoRoutineEnv_t *env = co->env;
-	stCoRoutine_t *lpCurrRoutine = env->pCallStack[ env->iCallStackSize - 1 ];
+	stCoRoutine_t *lpCurrRoutine = env->pCallStack[ env->iCallStackSize - 1 ]; // 获取kernel上下文
 	if( !co->cStart )
 	{
 		coctx_make( &co->ctx,(coctx_pfn_t)CoRoutineFunc,co,0 );
@@ -685,8 +685,8 @@ static short EpollEvent2Poll( uint32_t events )
 	return e;
 }
 
-static stCoRoutineEnv_t* g_arrCoEnvPerThread[ 102400 ] = { 0 };
-void co_init_curr_thread_env()
+static stCoRoutineEnv_t* g_arrCoEnvPerThread[ 102400 ] = { 0 }; // 预先给 0~102400 共102401个进程都分配一个指针 类似于kernel上下文  应该用thread_local代替之
+void co_init_curr_thread_env() // 每个线程有一个env env里有一个默认自带的kernel上下文 有个epoll
 {
 	pid_t pid = GetPid();	
 	g_arrCoEnvPerThread[ pid ] = (stCoRoutineEnv_t*)calloc( 1,sizeof(stCoRoutineEnv_t) );
@@ -739,7 +739,7 @@ void OnPollPreparePfn( stTimeoutItem_t * ap,struct epoll_event &e,stTimeoutItemL
 }
 
 
-void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
+void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg ) // idle
 {
 	if( !ctx->result )
 	{
@@ -750,7 +750,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 
 	for(;;)
 	{
-		int ret = co_epoll_wait( ctx->iEpollFd,result,stCoEpoll_t::_EPOLL_SIZE, 1 );
+		int ret = co_epoll_wait( ctx->iEpollFd,result,stCoEpoll_t::_EPOLL_SIZE, 1 ); // 睡眠定值?
 
 		stTimeoutItemLink_t *active = (ctx->pstActiveList);
 		stTimeoutItemLink_t *timeout = (ctx->pstTimeoutList);
@@ -762,7 +762,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 			stTimeoutItem_t *item = (stTimeoutItem_t*)result->events[i].data.ptr;
 			if( item->pfnPrepare )
 			{
-				item->pfnPrepare( item,result->events[i],active );
+				item->pfnPrepare( item,result->events[i],active ); // 定时?
 			}
 			else
 			{
@@ -791,7 +791,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 			PopHead<stTimeoutItem_t,stTimeoutItemLink_t>( active );
 			if( lp->pfnProcess )
 			{
-				lp->pfnProcess( lp );
+				lp->pfnProcess( lp ); // 恢复上下文
 			}
 
 			lp = active->head;
@@ -852,7 +852,7 @@ stCoRoutine_t *GetCurrThreadCo( )
 
 
 
-int co_poll( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout )
+int co_poll( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout ) // 每当阻塞则分配一个poll 挂树上swapout
 {
 	
 	if( timeout > stTimeoutItem_t::eMaxTimeout )
